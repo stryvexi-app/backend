@@ -10,7 +10,6 @@ import path from "node:path";
 import { Resend } from "resend";
 import rateLimit from "express-rate-limit";
 import { db } from "./firebase.js";
-import { PDFParse } from "pdf-parse";
 import mammoth from "mammoth";
 import WordExtractor from "word-extractor";
 import OpenAI from "openai";
@@ -75,34 +74,36 @@ async function extractResumeText(file) {
   }
 
   const extension = path.extname(file.originalname).toLowerCase();
-
   let extractedText = "";
 
   if (extension === ".pdf") {
-  const parser = new PDFParse({
-    data: file.buffer,
-  });
+    // Load PDF parsing only when processing a PDF.
+    const { PDFParse } = await import("pdf-parse");
 
-  try {
-    const result = await parser.getText();
-    extractedText = result.text || "";
-  } finally {
-    await parser.destroy();
+    const parser = new PDFParse({
+      data: new Uint8Array(file.buffer),
+    });
+
+    try {
+      const result = await parser.getText();
+      extractedText = result.text || "";
+    } finally {
+      await parser.destroy();
+    }
+  } else if (extension === ".docx") {
+    const result = await mammoth.extractRawText({
+      buffer: file.buffer,
+    });
+
+    extractedText = result.value || "";
+  } else if (extension === ".doc") {
+    const extractor = new WordExtractor();
+    const document = await extractor.extract(file.buffer);
+
+    extractedText = document.getBody() || "";
+  } else {
+    throw new Error("Resume must be PDF, DOC, or DOCX.");
   }
-} else if (extension === ".docx") {
-  const result = await mammoth.extractRawText({
-    buffer: file.buffer,
-  });
-
-  extractedText = result.value || "";
-} else if (extension === ".doc") {
-  const extractor = new WordExtractor();
-  const document = await extractor.extract(file.buffer);
-
-  extractedText = document.getBody() || "";
-} else {
-  throw new Error("Resume must be PDF, DOC, or DOCX.");
-}
 
   extractedText = extractedText
     .replace(/\r\n/g, "\n")
@@ -116,7 +117,6 @@ async function extractResumeText(file) {
     );
   }
 
-  // Keep the stored text within a reasonable size.
   return extractedText.slice(0, 200_000);
 }
 
