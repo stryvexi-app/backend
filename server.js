@@ -15,6 +15,7 @@ import WordExtractor from "word-extractor";
 import OpenAI from "openai";
 
 const app = express();
+app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 5001);
 const COOKIE = process.env.COOKIE_NAME || "stryvexi_token";
 const JWT_SECRET = process.env.JWT_SECRET || "";
