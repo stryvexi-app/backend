@@ -814,202 +814,107 @@ app.post(
   mockInterviewLimiter,
   async (req, res, next) => {
     try {
-      const targetRole = String(req.body?.targetRole || "")
-        .trim()
-        .slice(0, 150);
-      const experienceLevel = String(
-        req.body?.experienceLevel || ""
-      );
-      const interviewType = String(req.body?.interviewType || "");
-      const difficulty = String(req.body?.difficulty || "");
-
-      const validExperience = [
-        "Fresher",
-        "1–3 years",
-        "3–5 years",
-        "5–8 years",
-        "8+ years",
-      ];
-      const validTypes = [
-        "Technical",
-        "Behavioral",
-        "HR",
-        "Mixed",
-      ];
+      const mode = req.body?.mode === "topic" ? "topic" : "role";
+      const targetRole = String(req.body?.targetRole || "").trim().slice(0, 150);
+      const topic = String(req.body?.topic || "").trim().slice(0, 100);
+      const subtopic = String(req.body?.subtopic || "").trim().slice(0, 100);
+      const experienceLevel = String(req.body?.experienceLevel || "1–3 years");
+      const interviewType = String(req.body?.interviewType || "Technical");
+      const difficulty = String(req.body?.difficulty || "Medium");
+      const validExperience = ["Fresher", "1–3 years", "3–5 years", "5–8 years", "8+ years"];
+      const validTypes = ["Technical", "Behavioral", "HR", "Mixed"];
       const validDifficulties = ["Easy", "Medium", "Hard"];
       const validQuestionCounts = [5, 10, 15, 20];
-      const questionCount = Number(req.body?.questionCount ?? 15);
+      const questionCount = Number(req.body?.questionCount ?? 10);
 
       if (!validQuestionCounts.includes(questionCount)) {
-        return res.status(400).json({
-          success: false,
-          message: "Choose 5, 10, 15, or 20 questions.",
-        });
+        return res.status(400).json({ success: false, message: "Choose 5, 10, 15, or 20 questions." });
+      }
+      if (!validDifficulties.includes(difficulty)) {
+        return res.status(400).json({ success: false, message: "Choose a valid difficulty." });
+      }
+      if (mode === "role" && (!targetRole || !validExperience.includes(experienceLevel) || !validTypes.includes(interviewType))) {
+        return res.status(400).json({ success: false, message: "Provide a valid job role, experience level and interview type." });
+      }
+      if (mode === "topic" && !topic) {
+        return res.status(400).json({ success: false, message: "Select a topic to practice." });
       }
 
-      if (
-        !targetRole ||
-        !validExperience.includes(experienceLevel) ||
-        !validTypes.includes(interviewType) ||
-        !validDifficulties.includes(difficulty)
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Please provide valid interview settings.",
-        });
-      }
+      const userId = req.claims.sub;
+      const sessionsSnap = await db.ref(`users/${userId}/mockInterviews`).get();
+      const previousSessions = sessionsSnap.exists() ? Object.values(sessionsSnap.val() || {}) : [];
+      const sameContext = previousSessions.filter((session) => {
+        if (!session || !Array.isArray(session.questions)) return false;
+        if (mode === "role") return (session.mode || "role") === "role" && String(session.targetRole || "").toLowerCase() === targetRole.toLowerCase();
+        return session.mode === "topic" && String(session.topic || "").toLowerCase() === topic.toLowerCase() && String(session.subtopic || "").toLowerCase() === subtopic.toLowerCase();
+      });
+      const previouslyAskedQuestions = sameContext.flatMap((session) => session.questions.map((q) => String(q.question || "").trim())).filter(Boolean).slice(-200);
 
-     const userId = req.claims.sub;
+      const context = mode === "role"
+        ? `Target job role: ${targetRole}\nExperience level: ${experienceLevel}\nInterview type: ${interviewType}`
+        : `Practice topic: ${topic}\nSubtopic: ${subtopic || "Choose relevant subtopics within the topic"}\nThis is a focused topic interview, not a job-role interview.`;
 
-const previousQuestions = await getPreviouslyAskedQuestions(
-  userId,
-  targetRole
-);
-
-// Keep the prompt within a reasonable size for users with many sessions.
-const recentPreviousQuestions = previousQuestions.slice(-200);
-
-const completion = await openai.chat.completions.create({
-  model: "gpt-4o-mini",
-  response_format: { type: "json_object" },
-  messages: [
-    {
-      role: "system",
-      content: `You are an expert mock interview question generator.
-
-Generate exactly ${questionCount} NEW and distinct mock interview questions.
-
-Return JSON in this format:
-{
-  "questions": [
-    {
-      "question": "...",
-      "focus": "..."
-    }
-  ]
-}
-
-Requirements:
-1. Match the target role, experience level, interview type, and difficulty.
-2. Questions must be realistic, clear, and useful for interview preparation.
-3. Do not include answers, hints, or feedback.
-4. For Mixed interviews, include technical, behavioral, and HR questions.
-5. Do not repeat any previously asked question.
-6. Do not create a superficial paraphrase of a previous question.
-7. Change the underlying concept, scenario, problem, or skill being tested.
-8. Ensure all questions within this session are distinct from one another.
-9. Explore different topics and scenarios instead of repeatedly testing
-   the same small set of concepts.
-10. Return exactly ${questionCount} questions, not 15 unless requested.
-11. Return valid JSON only.`,
-    },
-    {
-      role: "user",
-      content: JSON.stringify({
-        targetRole,
-        experienceLevel,
-        interviewType,
-        difficulty,
-        questionCount,
-        previouslyAskedQuestions: recentPreviousQuestions,
-      }),
-    },
-  ],
-});
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        response_format: { type: "json_object" },
+        temperature: 0.7,
+        messages: [
+          {
+            role: "system",
+            content: `You are an expert mock interview question generator.\n\nGenerate exactly ${questionCount} new, distinct interview questions.\n\n${context}\nDifficulty: ${difficulty}\n\nReturn JSON only: {"questions":[{"question":"...","focus":"..."}]}\n\nRequirements:\n1. Every question must be relevant to the selected ${mode === "role" ? "job role and experience level" : "topic and optional subtopic"}.\n2. Keep questions realistic, clear and useful for interview preparation.\n3. Do not include answers, hints or feedback.\n4. Questions must test different concepts and scenarios.\n5. Do not repeat or superficially paraphrase previously asked questions.\n6. Questions within this session must be distinct.\n7. Return exactly ${questionCount} questions.\n8. Return valid JSON only.`,
+          },
+          {
+            role: "user",
+            content: JSON.stringify({ mode, targetRole, topic, subtopic, experienceLevel, interviewType, difficulty, questionCount, previouslyAskedQuestions }),
+          },
+        ],
+      });
 
       const raw = completion.choices[0]?.message?.content;
-      if (!raw) {
-        return res.status(502).json({
-          success: false,
-          message: "Unable to generate interview questions.",
-        });
-      }
+      if (!raw) return res.status(502).json({ success: false, message: "Unable to generate interview questions." });
 
       const parsed = JSON.parse(raw);
       const questions = parsed.questions;
-
-      if (
-        !Array.isArray(questions) ||
-        questions.length !== questionCount ||
-        questions.some(
-          (q) =>
-            typeof q?.question !== "string" ||
-            !q.question.trim() ||
-            typeof q?.focus !== "string"
-        )
-      ) {
-        return res.status(502).json({
-          success: false,
-          message: "The generated interview was invalid. Please retry.",
-        });
+      if (!Array.isArray(questions) || questions.length !== questionCount || questions.some((q) => typeof q?.question !== "string" || !q.question.trim() || typeof q?.focus !== "string")) {
+        return res.status(502).json({ success: false, message: "The generated interview was invalid. Please retry." });
       }
-      // Check for duplicate questions
-function normalizeQuestion(question) {
-  return String(question || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
-const previousQuestionSet = new Set(
-  previousQuestions.map(normalizeQuestion)
-);
+      const normalizeQuestion = (question) => String(question || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+      const previousSet = new Set(previouslyAskedQuestions.map(normalizeQuestion));
+      const generated = questions.map((q) => normalizeQuestion(q.question));
+      if (new Set(generated).size !== generated.length || generated.some((q) => previousSet.has(q))) {
+        return res.status(502).json({ success: false, message: "Some questions overlapped with previous sessions. Please retry." });
+      }
 
-const generatedQuestions = questions.map((q) =>
-  normalizeQuestion(q.question)
-);
-
-const hasDuplicates =
-  new Set(generatedQuestions).size !== generatedQuestions.length ||
-  generatedQuestions.some((question) =>
-    previousQuestionSet.has(question)
-  );
-
-if (hasDuplicates) {
-  return res.status(502).json({
-    success: false,
-    message:
-      "Some questions overlapped with previous sessions. Please start again to generate a fresh set.",
-  });
-}
-
-      const sessionRef = db
-        .ref(`users/${userId}/mockInterviews`)
-        .push();
-
-     const session = {
-  id: sessionRef.key,
-  targetRole,
-  experienceLevel,
-  interviewType,
-  difficulty,
-  questionCount,
-  totalQuestions: questionCount,
-  status: "in_progress",
-  questions: questions.map((q) => ({
-    question: q.question.trim().slice(0, 1500),
-    focus: q.focus.trim().slice(0, 300),
-  })),
-  answers: [],
-  createdAt: Date.now(),
-};
+      const sessionRef = db.ref(`users/${userId}/mockInterviews`).push();
+      const session = {
+        id: sessionRef.key,
+        mode,
+        targetRole: mode === "role" ? targetRole : "",
+        topic: mode === "topic" ? topic : "",
+        subtopic: mode === "topic" ? subtopic : "",
+        experienceLevel: mode === "role" ? experienceLevel : "Topic practice",
+        interviewType: mode === "role" ? interviewType : "Technical",
+        difficulty,
+        questionCount,
+        totalQuestions: questionCount,
+        status: "in_progress",
+        questions: questions.map((q) => ({ question: q.question.trim().slice(0, 1500), focus: q.focus.trim().slice(0, 300) })),
+        answers: [],
+        createdAt: Date.now(),
+      };
 
       await sessionRef.set(session);
-
       return res.status(201).json({
-  success: true,
-  session: {
-    id: session.id,
-    targetRole,
-    experienceLevel,
-    interviewType,
-    difficulty,
-    questionCount: session.questionCount,
-    questions: session.questions,
-    totalQuestions: session.totalQuestions,
-  },
-});
+        success: true,
+        session: {
+          id: session.id, mode, targetRole: session.targetRole,
+          topic: session.topic, subtopic: session.subtopic,
+          experienceLevel: session.experienceLevel,
+          interviewType: session.interviewType, difficulty,
+          questionCount, questions: session.questions, totalQuestions: questionCount,
+        },
+      });
     } catch (error) {
       next(error);
     }
@@ -1323,7 +1228,10 @@ app.get("/api/mock-interviews/history", auth, async (req, res, next) => {
     const sessions = Object.values(snapshot.val())
       .map((session) => ({
         id: session.id,
-        targetRole: session.targetRole,
+        mode: session.mode || "role",
+        topic: session.topic || "",
+        subtopic: session.subtopic || "",
+        targetRole: session.targetRole || "",
         experienceLevel: session.experienceLevel,
         interviewType: session.interviewType,
         difficulty: session.difficulty,
